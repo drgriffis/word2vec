@@ -1,6 +1,7 @@
 // Modified by Denis Newman-Griffis (newman-griffis.1@osu.edu)
 //   (0) Added explanatory comments
 //   (1) Moved vocabulary saving to before start of training
+//   (2) Added option to save checkpoints during training
 //
 //********************************************************************//
 //  Copyright 2013 Google Inc. All Rights Reserved.
@@ -22,6 +23,7 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdbool.h>
 
 #define MAX_STRING 100
 #define MAX_PATH_LENGTH 300
@@ -43,13 +45,18 @@ struct vocab_word {
 char train_file[MAX_PATH_LENGTH], output_file[MAX_PATH_LENGTH];
 char save_vocab_file[MAX_PATH_LENGTH], read_vocab_file[MAX_PATH_LENGTH];
 struct vocab_word *vocab;
-int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1;
+int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, save_every = 0, save_initialization = 0;
 int *vocab_hash;
 long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
-long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, classes = 0;
+long long train_words = 0, iter = 5, file_size = 0, classes = 0;
 real alpha = 0.025, starting_alpha, sample = 1e-3;
 real *syn0, *syn1, *syn1neg, *expTable;
 clock_t start;
+
+long long word_count_all_threads = 0;
+bool training = false;
+int curiter = 0;
+pthread_mutex_t saving_embeds;
 
 int hs = 0, negative = 5;
 const int table_size = 1e8;
@@ -341,6 +348,30 @@ void ReadVocab() {
   fclose(fin);
 }
 
+void SaveVectors(bool for_iter, int iter) {
+  long long a, b;
+
+  char this_output_file[2*MAX_PATH_LENGTH];
+  this_output_file[0] = 0;
+  if (for_iter)
+    sprintf(this_output_file, "%s.iter%d", output_file, iter);
+  else
+    sprintf(this_output_file, "%s", output_file);
+
+  printf("\n  >> Saving embeddings to %s\n", this_output_file);
+  FILE *fo = fopen(this_output_file, "wb");
+
+  // Save the word vectors
+  fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
+  for (a = 0; a < vocab_size; a++) {
+    fprintf(fo, "%s ", vocab[a].word);
+    if (binary) for (b = 0; b < layer1_size; b++) fwrite(&syn0[a * layer1_size + b], sizeof(real), 1, fo);
+    else for (b = 0; b < layer1_size; b++) fprintf(fo, "%lf ", syn0[a * layer1_size + b]);
+    fprintf(fo, "\n");
+  }
+  fclose(fo);
+}
+
 void InitNet() {
   long long a, b;
   unsigned long long next_random = 1;
@@ -365,9 +396,47 @@ void InitNet() {
   CreateBinaryTree();
 }
 
+void *TrackProgress(void *a) {
+  long long last_word_count = -1, iter_word_count = 0;
+  int previter = -1;
+  time_t now, iter_start = time(NULL);
+  long long corpus_token_count = train_words;
+  while (training) {
+    if (curiter > previter) {
+      previter = curiter;
+
+      if (curiter > 0 && (curiter % save_every) == 0) {
+        // pause training to save the embedding state
+        pthread_mutex_lock(&saving_embeds);
+        printf("\n\n");
+        SaveVectors(true, curiter);
+        pthread_mutex_unlock(&saving_embeds);
+      }
+
+      printf("\n\nIteration %d/%d\n", curiter+1, iter);
+      fflush(stdout);
+      iter_start = time(NULL);
+    }
+
+    if (word_count_all_threads - last_word_count > 2000) {
+      last_word_count = word_count_all_threads;
+      iter_word_count = word_count_all_threads - (curiter*corpus_token_count);
+      if ((debug_mode > 1)) {
+        now = time(NULL);
+        printf("%cAlpha: %f  Progress: %.2f%%  Words/thread/sec: %.2fk  Elapsed: %.2fs (%.2fs total)", 13, alpha,
+                    (iter_word_count / (real)(corpus_token_count + 1)) * 100,
+                    (word_count_all_threads / 1000) / ((real)(now - start)),
+                    (real)(now - iter_start), (real)(now - start));
+        fflush(stdout);
+      }
+    }
+  }
+  pthread_exit(NULL);
+}
+
 void *TrainModelThread(void *id) {
   long long a, b, d, cw, word, last_word, sentence_length = 0, sentence_position = 0;
-  long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
+  long long thread_total_word_count = 0, thread_iter_word_count = 0, last_report_word_count = 0, last_alpha_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
   long long l1, l2, c, target, label, local_iter = iter;
   char file_specifier[MAX_PATH_LENGTH];
   file_specifier[0] = 0;
@@ -379,20 +448,23 @@ void *TrainModelThread(void *id) {
   FILE *fi = fopen(train_file, "rb");
   fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
   while (1) {
-    // track progress and handle alpha scheduling
-    if (word_count - last_word_count > 10000) {
-      word_count_actual += word_count - last_word_count;
-      last_word_count = word_count;
-      if ((debug_mode > 1)) {
-        now=clock();
-        printf("%cAlpha: %f  Progress: %.2f%%  Words/thread/sec: %.2fk  ", 13, alpha,
-         word_count_actual / (real)(iter * train_words + 1) * 100,
-         word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
-        fflush(stdout);
-      }
-      alpha = starting_alpha * (1 - word_count_actual / (real)(iter * train_words + 1));
-      if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
+    // pause if the embeddings are currently being saved
+    pthread_mutex_lock(&saving_embeds);
+    pthread_mutex_unlock(&saving_embeds);
+
+    // update the master word count
+    if (thread_total_word_count - last_report_word_count > 100) {
+      word_count_all_threads += (thread_total_word_count - last_report_word_count);
+      last_report_word_count = thread_total_word_count;
     }
+
+    // handle alpha scheduling, based on number of words read
+    if (thread_total_word_count - last_alpha_word_count > 10000) {
+      alpha = starting_alpha * (1 - word_count_all_threads / (real)(iter*train_words + 1));
+      if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
+      last_alpha_word_count = thread_total_word_count;
+    }
+
     // read in the next sentence
     if (sentence_length == 0) {
       while (1) {
@@ -400,7 +472,8 @@ void *TrainModelThread(void *id) {
         if (feof(fi)) break;
         // skip over words that aren't in the trimmed vocabulary
         if (word == -1) continue;
-        word_count++;
+        thread_total_word_count++;
+        thread_iter_word_count++;
         // 0 is the vocab index of </s> (sentence boundary)
         if (word == 0) break;
         // The subsampling randomly discards frequent words while keeping the ranking same
@@ -416,12 +489,11 @@ void *TrainModelThread(void *id) {
       sentence_position = 0;
     }
     // roll over to next iteration
-    if (feof(fi) || (word_count > train_words / num_threads)) {
-      word_count_actual += word_count - last_word_count;
+    if (feof(fi) || (thread_iter_word_count > train_words / num_threads)) {
       local_iter--;
+      curiter = iter - local_iter;
       if (local_iter == 0) break;
-      word_count = 0;
-      last_word_count = 0;
+      thread_iter_word_count = 0;
       sentence_length = 0;
       fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
       continue;
@@ -558,7 +630,7 @@ void *TrainModelThread(void *id) {
 void TrainModel() {
   long a, b, c, d;
   FILE *fo;
-  pthread_t *pt = (pthread_t *)malloc((num_threads) * sizeof(pthread_t));
+  pthread_t *pt = (pthread_t *)malloc((num_threads + 1) * sizeof(pthread_t));
   printf("Starting training using file %s\n", train_file);
   starting_alpha = alpha;
   if (read_vocab_file[0] != 0) ReadVocab(); else LearnVocabFromTrainFile();
@@ -566,18 +638,19 @@ void TrainModel() {
   if (output_file[0] == 0) return;
   InitNet();
   if (negative > 0) InitUnigramTable();
+  if (save_initialization == 1)
+    SaveVectors(true, 0);
+
   start = clock();
+  training = true;
   for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainModelThread, (void *)a);
+  pthread_create(&pt[num_threads], NULL, TrackProgress, (void *)NULL);
   for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
+  training = false;
+  pthread_join(pt[num_threads], NULL);
+
   if (classes == 0) {
-    // Save the word vectors
-    fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
-    for (a = 0; a < vocab_size; a++) {
-      fprintf(fo, "%s ", vocab[a].word);
-      if (binary) for (b = 0; b < layer1_size; b++) fwrite(&syn0[a * layer1_size + b], sizeof(real), 1, fo);
-      else for (b = 0; b < layer1_size; b++) fprintf(fo, "%lf ", syn0[a * layer1_size + b]);
-      fprintf(fo, "\n");
-    }
+    SaveVectors(false, -1);
   } else {
     fo = fopen(output_file, "wb");
     // Run K-means on the word vectors
@@ -708,6 +781,8 @@ int main(int argc, char **argv) {
   if ((i = ArgPos((char *)"-iter", argc, argv)) > 0) iter = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-min-count", argc, argv)) > 0) min_count = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-classes", argc, argv)) > 0) classes = atoi(argv[i + 1]);
+  if ((i = ArgPos((char *)"-save-every", argc, argv)) > 0) save_every = atoi(argv[i + 1]);
+  if ((i = ArgPos((char *)"-save-initialization", argc, argv)) > 0) save_initialization = atoi(argv[i + 1]);
   vocab = (struct vocab_word *)calloc(vocab_max_size, sizeof(struct vocab_word));
   vocab_hash = (int *)calloc(vocab_hash_size, sizeof(int));
   expTable = (real *)malloc((EXP_TABLE_SIZE + 1) * sizeof(real));
