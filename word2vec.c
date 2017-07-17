@@ -45,7 +45,7 @@ struct vocab_word {
 char train_file[MAX_PATH_LENGTH], output_file[MAX_PATH_LENGTH];
 char save_vocab_file[MAX_PATH_LENGTH], read_vocab_file[MAX_PATH_LENGTH];
 struct vocab_word *vocab;
-int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, save_every = 0, save_initialization = 0;
+int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, save_every = 0, save_initialization = 0, no_annealing = 0;
 int *vocab_hash;
 long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
 long long train_words = 0, iter = 5, file_size = 0, classes = 0;
@@ -459,7 +459,7 @@ void *TrainModelThread(void *id) {
     }
 
     // handle alpha scheduling, based on number of words read
-    if (thread_total_word_count - last_alpha_word_count > 10000) {
+    if (!no_annealing && thread_total_word_count - last_alpha_word_count > 10000) {
       alpha = starting_alpha * (1 - word_count_all_threads / (real)(iter*train_words + 1));
       if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
       last_alpha_word_count = thread_total_word_count;
@@ -756,6 +756,8 @@ int main(int argc, char **argv) {
     printf("\t\tSave embeddings after every <int> iterations; default is 0 (only save at end)\n");
     printf("\t-save-initialization <int>\n");
     printf("\t\tSave random initialization of embeddings; default is 0 (off)\n");
+    printf("\t-no-annealing <int>\n");
+    printf("\t\tDisable learning rate annealing during training; default is 0 (off)\n");
     printf("\nExamples:\n");
     printf("./word2vec -train data.txt -output vec.txt -size 200 -window 5 -sample 1e-4 -negative 5 -hs 0 -binary 0 -cbow 1 -iter 10 -save-every 3\n\n");
     return 0;
@@ -783,6 +785,7 @@ int main(int argc, char **argv) {
   if ((i = ArgPos((char *)"-classes", argc, argv)) > 0) classes = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-save-every", argc, argv)) > 0) save_every = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-save-initialization", argc, argv)) > 0) save_initialization = atoi(argv[i + 1]);
+  if ((i = ArgPos((char *)"-no-annealing", argc, argv)) > 0) no_annealing = atoi(argv[i + 1]);
   vocab = (struct vocab_word *)calloc(vocab_max_size, sizeof(struct vocab_word));
   vocab_hash = (int *)calloc(vocab_hash_size, sizeof(int));
   expTable = (real *)malloc((EXP_TABLE_SIZE + 1) * sizeof(real));
