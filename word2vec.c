@@ -360,6 +360,10 @@ void SaveVectors(bool for_iter, int iter) {
 
   printf("\n  >> Saving embeddings to %s\n", this_output_file);
   FILE *fo = fopen(this_output_file, "wb");
+  if (fo == NULL) {
+    printf("ERROR: could not open vector output file %s!\n", this_output_file);
+    exit(1);
+  }
 
   // Save the word vectors
   fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
