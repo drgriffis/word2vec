@@ -42,7 +42,7 @@ struct vocab_word {
   char *word, *code, codelen;
 };
 
-char train_file[MAX_PATH_LENGTH], output_file[MAX_PATH_LENGTH];
+char train_file[MAX_PATH_LENGTH], output_file[MAX_PATH_LENGTH], context_file[MAX_PATH_LENGTH];
 char save_vocab_file[MAX_PATH_LENGTH], read_vocab_file[MAX_PATH_LENGTH];
 struct vocab_word *vocab;
 int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, save_every = 0, save_initialization = 0, no_annealing = 0;
@@ -348,20 +348,12 @@ void ReadVocab() {
   fclose(fin);
 }
 
-void SaveVectors(bool for_iter, int iter) {
+void WriteVectorsTo(char *output_file, real *vectors) {
   long long a, b;
 
-  char this_output_file[2*MAX_PATH_LENGTH];
-  this_output_file[0] = 0;
-  if (for_iter)
-    sprintf(this_output_file, "%s.iter%d", output_file, iter);
-  else
-    sprintf(this_output_file, "%s", output_file);
-
-  printf("\n  >> Saving embeddings to %s\n", this_output_file);
-  FILE *fo = fopen(this_output_file, "wb");
+  FILE *fo = fopen(output_file, "wb");
   if (fo == NULL) {
-    printf("ERROR: could not open vector output file %s!\n", this_output_file);
+    printf("ERROR: could not open vector output file %s!\n", output_file);
     exit(1);
   }
 
@@ -369,11 +361,31 @@ void SaveVectors(bool for_iter, int iter) {
   fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
   for (a = 0; a < vocab_size; a++) {
     fprintf(fo, "%s ", vocab[a].word);
-    if (binary) for (b = 0; b < layer1_size; b++) fwrite(&syn0[a * layer1_size + b], sizeof(real), 1, fo);
+    if (binary) for (b = 0; b < layer1_size; b++) fwrite(&vectors[a * layer1_size + b], sizeof(real), 1, fo);
     else for (b = 0; b < layer1_size; b++) fprintf(fo, "%lf ", syn0[a * layer1_size + b]);
     fprintf(fo, "\n");
   }
   fclose(fo);
+}
+
+void SaveVectors(bool for_iter, int iter) {
+  char this_output_file[2*MAX_PATH_LENGTH], this_context_file[2*MAX_PATH_LENGTH];
+  this_output_file[0] = 0;
+  if (for_iter) {
+    sprintf(this_output_file, "%s.iter%d", output_file, iter);
+    sprintf(this_context_file, "%s.iter%d", context_file, iter);
+  }
+  else {
+    sprintf(this_output_file, "%s", output_file);
+    sprintf(this_context_file, "%s", context_file);
+  }
+
+  printf("\n  >> Saving embeddings to %s\n", this_output_file);
+  WriteVectorsTo(this_output_file, syn0);
+  if (context_file[0] != 0) {
+    printf("  >> Saving context embeddings to %s\n", this_context_file);
+    WriteVectorsTo(this_context_file, syn1neg);
+  }
 }
 
 void InitNet() {
@@ -725,6 +737,8 @@ int main(int argc, char **argv) {
     printf("\t\tUse text data from <file> to train the model\n");
     printf("\t-output <file>\n");
     printf("\t\tUse <file> to save the resulting word vectors / word clusters\n");
+    printf("\t-contexts <file>\n");
+    printf("\t\tUse <file> to save the context vectors; not used if -negative 0 [included in -save-every]\n");
     printf("\t-size <int>\n");
     printf("\t\tSet size of word vectors; default is 100\n");
     printf("\t-window <int>\n");
@@ -767,6 +781,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   output_file[0] = 0;
+  context_file[0] = 0;
   save_vocab_file[0] = 0;
   read_vocab_file[0] = 0;
   if ((i = ArgPos((char *)"-size", argc, argv)) > 0) layer1_size = atoi(argv[i + 1]);
@@ -779,6 +794,7 @@ int main(int argc, char **argv) {
   if (cbow) alpha = 0.05;
   if ((i = ArgPos((char *)"-alpha", argc, argv)) > 0) alpha = atof(argv[i + 1]);
   if ((i = ArgPos((char *)"-output", argc, argv)) > 0) strcpy(output_file, argv[i + 1]);
+  if ((i = ArgPos((char *)"-contexts", argc, argv)) > 0) strcpy(context_file, argv[i + 1]);
   if ((i = ArgPos((char *)"-window", argc, argv)) > 0) window = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-sample", argc, argv)) > 0) sample = atof(argv[i + 1]);
   if ((i = ArgPos((char *)"-hs", argc, argv)) > 0) hs = atoi(argv[i + 1]);
