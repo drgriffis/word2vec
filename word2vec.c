@@ -481,7 +481,7 @@ void *TrackProgress(void *a) {
         pthread_mutex_unlock(&saving_embeds);
       }
 
-      printf("\n\nIteration %d/%d\n", curiter+1, iter);
+      printf("\n\nIteration %d/%d\n", curiter+1, (int)iter);
       fflush(stdout);
       iter_start = time(NULL);
     }
@@ -506,8 +506,6 @@ void *TrainModelThread(void *id) {
   long long a, b, d, cw, word, last_word, sentence_length = 0, sentence_position = 0;
   long long thread_total_word_count = 0, thread_iter_word_count = 0, last_report_word_count = 0, last_alpha_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
   long long l1, l2, c, target, label, local_iter = iter;
-  char file_specifier[MAX_PATH_LENGTH];
-  file_specifier[0] = 0;
   unsigned long long next_random = (long long)id;
   real f, g;
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
