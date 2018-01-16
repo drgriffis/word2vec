@@ -420,7 +420,7 @@ void *TrackProgress(void *a) {
     if (curiter > previter) {
       previter = curiter;
 
-      if (curiter > 0 && (curiter % save_every) == 0) {
+      if (save_every > 0 && curiter > 0 && (curiter % save_every) == 0) {
         // pause training to save the embedding state
         pthread_mutex_lock(&saving_embeds);
         printf("\n\n");
