@@ -505,8 +505,8 @@ void *TrainModelThread(void *id) {
     // roll over to next iteration
     if (feof(fi) || (thread_iter_word_count > train_words / num_threads)) {
       local_iter--;
+      if (local_iter <= 0) break;
       curiter = iter - local_iter;
-      if (local_iter == 0) break;
       thread_iter_word_count = 0;
       sentence_length = 0;
       fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
