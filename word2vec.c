@@ -51,7 +51,6 @@ long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
 long long train_words = 0, iter = 5, file_size = 0, classes = 0;
 real alpha = 0.025, starting_alpha, sample = 1e-3;
 real *syn0, *syn1, *syn1neg, *expTable;
-clock_t start;
 
 long long word_count_all_threads = 0;
 bool training = false;
@@ -415,7 +414,7 @@ void InitNet() {
 void *TrackProgress(void *a) {
   long long last_word_count = -1, iter_word_count = 0;
   int previter = -1;
-  time_t now, iter_start = time(NULL);
+  time_t now, start = time(NULL), iter_start = time(NULL);
   long long corpus_token_count = train_words;
   while (training) {
     if (curiter > previter) {
@@ -458,7 +457,6 @@ void *TrainModelThread(void *id) {
   file_specifier[0] = 0;
   unsigned long long next_random = (long long)id;
   real f, g;
-  clock_t now;
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
   FILE *fi = fopen(train_file, "rb");
@@ -657,7 +655,6 @@ void TrainModel() {
   if (save_initialization == 1)
     SaveVectors(true, 0);
 
-  start = clock();
   training = true;
   for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainModelThread, (void *)a);
   pthread_create(&pt[num_threads], NULL, TrackProgress, (void *)NULL);
