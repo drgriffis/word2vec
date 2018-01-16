@@ -42,7 +42,7 @@ struct vocab_word {
   char *word, *code, codelen;
 };
 
-char train_file[MAX_PATH_LENGTH], output_file[MAX_PATH_LENGTH], context_file[MAX_PATH_LENGTH];
+char train_file[MAX_PATH_LENGTH], output_file[MAX_PATH_LENGTH], context_file[MAX_PATH_LENGTH], preinit_file[MAX_PATH_LENGTH];
 char save_vocab_file[MAX_PATH_LENGTH], read_vocab_file[MAX_PATH_LENGTH];
 struct vocab_word *vocab;
 int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, save_every = 0, save_initialization = 0, no_annealing = 0;
@@ -387,6 +387,59 @@ void SaveVectors(bool for_iter, int iter) {
   }
 }
 
+void PreinitializeVectorsFrom(char *fpath, real *embeddings, long long embed_size) {
+    long read_vocab_size, embeds_read_sofar = 0, known_words_found = 0;
+    long long c, read_embed_size;
+    char *embed_word = calloc(MAX_STRING, sizeof(char));
+    int embed_word_ix = 0;
+    bool known_word = false;
+    int word_vocab_ix;
+    real tmp_vector[embed_size]; // use this for reading in vectors not in the target vocabulary
+
+    printf("Pre-initializing word vectors from %s\n", fpath);
+
+    FILE *f = fopen(fpath, "rb");
+
+    // error check
+    if (f == NULL) {
+        printf("Unable to read embedding file %s\n", fpath);
+        exit(1);
+    }
+
+    // read in the header info
+    fscanf(f, "%ld", &read_vocab_size);
+    fscanf(f, "%lld", &read_embed_size);
+    if (read_embed_size != embed_size) {
+        printf("Embedding file %s has embedding size %lld, expected embedding size %lld\n",
+            fpath, read_embed_size, embed_size);
+        exit(1);
+    }
+
+    for (int i = 0; i < read_vocab_size; i++) {
+        embed_word_ix = 0;
+        while (1) {
+            embed_word[embed_word_ix] = fgetc(f);
+            if (feof(f) || (embed_word[embed_word_ix] == ' ')) break;
+            if ((embed_word_ix < MAX_STRING) && (embed_word[embed_word_ix] != '\n')) embed_word_ix++;
+        }
+        embed_word[embed_word_ix] = 0;
+        word_vocab_ix = SearchVocab(embed_word);
+        if (word_vocab_ix == -1) known_word = false;
+        else known_word = true;
+        for (c = 0; c < embed_size; c++) {
+            if (known_word)
+                fread(&embeddings[(word_vocab_ix * embed_size) + c], sizeof(float), 1, f);
+            else
+                fread(&tmp_vector[c], sizeof(float), 1, f);
+        }
+        embeds_read_sofar++;
+        if (known_word) known_words_found++;
+    }
+
+    fclose(f);
+    printf("Pre-initialized %ld words (read %ld total embeddings)\n", known_words_found, embeds_read_sofar);
+}
+
 void InitNet() {
   long long a, b;
   unsigned long long next_random = 1;
@@ -651,6 +704,7 @@ void TrainModel() {
   if (save_vocab_file[0] != 0) SaveVocab();
   if (output_file[0] == 0) return;
   InitNet();
+  if (preinit_file[0] != 0) PreinitializeVectorsFrom(preinit_file, syn0, layer1_size);
   if (negative > 0) InitUnigramTable();
   if (save_initialization == 1)
     SaveVectors(true, 0);
@@ -773,12 +827,15 @@ int main(int argc, char **argv) {
     printf("\t\tSave random initialization of embeddings; default is 0 (off)\n");
     printf("\t-no-annealing <int>\n");
     printf("\t\tDisable learning rate annealing during training; default is 0 (off)\n");
+    printf("\t-preinitialize-from <file>\n");
+    printf("\t\tPretrained vectors in <file> will be used to preinitialize values for any words in common with the target corpus (unused words will be ignored, and any target words not found in <file> will be initalized randomly)\n");
     printf("\nExamples:\n");
     printf("./word2vec -train data.txt -output vec.txt -size 200 -window 5 -sample 1e-4 -negative 5 -hs 0 -binary 0 -cbow 1 -iter 10 -save-every 3\n\n");
     return 0;
   }
   output_file[0] = 0;
   context_file[0] = 0;
+  preinit_file[0] = 0;
   save_vocab_file[0] = 0;
   read_vocab_file[0] = 0;
   if ((i = ArgPos((char *)"-size", argc, argv)) > 0) layer1_size = atoi(argv[i + 1]);
@@ -803,6 +860,7 @@ int main(int argc, char **argv) {
   if ((i = ArgPos((char *)"-save-every", argc, argv)) > 0) save_every = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-save-initialization", argc, argv)) > 0) save_initialization = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-no-annealing", argc, argv)) > 0) no_annealing = atoi(argv[i + 1]);
+  if ((i = ArgPos((char *)"-preinitialize-from", argc, argv)) > 0) strcpy(preinit_file, argv[i + 1]); 
   vocab = (struct vocab_word *)calloc(vocab_max_size, sizeof(struct vocab_word));
   vocab_hash = (int *)calloc(vocab_hash_size, sizeof(int));
   expTable = (real *)malloc((EXP_TABLE_SIZE + 1) * sizeof(real));
